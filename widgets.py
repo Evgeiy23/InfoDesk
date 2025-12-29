@@ -236,7 +236,9 @@ class OperatorWidget(QWidget):
         current_selection = self.pending_list.currentItem()
         current_id = None
         if current_selection:
-            current_id = int(current_selection.text().split("]")[0].strip("["))
+            try:
+                current_id = int(current_selection.text().split("]")[0].strip("["))
+            except: pass
         
         self.pending_list.clear()
         for qid, user, question in list_pending_questions():
@@ -252,12 +254,15 @@ class OperatorWidget(QWidget):
             self.question_body.setPlainText("")
             return
         
-        qid = int(it.text().split("]")[0].strip("["))
-        q = get_question_by_id(qid)
-        if q:
-            self.question_body.setPlainText(
-                f"От: {q['user']}\n\n{q['question']}"
-            )
+        try:
+            qid = int(it.text().split("]")[0].strip("["))
+            q = get_question_by_id(qid)
+            if q:
+                self.question_body.setPlainText(
+                    f"От: {q['user']}\n\n{q['question']}"
+                )
+        except:
+            self.question_body.setPlainText("")
     
     def send_answer(self):
         it = self.pending_list.currentItem()
@@ -265,17 +270,20 @@ class OperatorWidget(QWidget):
             QMessageBox.warning(self, "Ошибка", "Выберите вопрос.")
             return
         
-        qid = int(it.text().split("]")[0].strip("["))
-        ans = self.answer_edit.toPlainText().strip()
-        
-        if not ans:
-            QMessageBox.warning(self, "Ошибка", "Введите ответ.")
-            return
-        
-        set_answer(qid, ans, self.username)
-        QMessageBox.information(self, "Готово", "Ответ отправлен.")
-        self.answer_edit.clear()
-        self.refresh_pending()
+        try:
+            qid = int(it.text().split("]")[0].strip("["))
+            ans = self.answer_edit.toPlainText().strip()
+            
+            if not ans:
+                QMessageBox.warning(self, "Ошибка", "Введите ответ.")
+                return
+            
+            set_answer(qid, ans, self.username)
+            QMessageBox.information(self, "Готово", "Ответ отправлен.")
+            self.answer_edit.clear()
+            self.refresh_pending()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось отправить ответ: {e}")
 
 
 class RAGClientWidget(QWidget):
@@ -308,6 +316,7 @@ class RAGClientWidget(QWidget):
         self.setLayout(layout)
     
     def clean_text(self, text):
+        if not text: return ""
         return re.sub(
             r'\s+', ' ',
             text.replace('&nbsp;', ' ')
@@ -318,42 +327,53 @@ class RAGClientWidget(QWidget):
         if not question:
             QMessageBox.warning(self, "Ошибка", "Введите вопрос.")
             return
-        
+
         self.output_box.setText("Отправка запроса...")
         self.btn_send.setEnabled(False)
-        
+
         self.thread = RequestThread(self.api_url, question)
         self.thread.finished.connect(
             lambda ans, q=question: self.on_finished(ans, q)
         )
-        self.thread.error.connect(self.on_error)
+        self.thread.error.connect(
+            lambda msg, q=question: self.on_error(msg, q)
+        )
         self.thread.start()
     
     def on_finished(self, answer, original_question):
-        answer = self.clean_text(answer or "")
-        self.output_box.setText(answer or "(пустой ответ)")
-        
-        if self.username:
-            add_question(
-                self.username,
-                original_question,
-                answer=answer,
-                status="answered",
-                operator="RAG"
-            )
-        
         self.btn_send.setEnabled(True)
+        cleaned_answer = self.clean_text(answer or "")
+        
+        # Маркеры, означающие, что RAG не нашел информацию
+        fail_markers = ["не знаю", "не найден", "не могу ответить", "перевожу на оператора", "обратитесь к специалисту"]
+        
+        is_failed = not cleaned_answer or any(marker in cleaned_answer.lower() for marker in fail_markers)
+
+        if is_failed:
+            # Убрано "[Система]: К сожалению..." и "Перевожу на оператора"
+            self.output_box.setText("Ваш запрос передан оператору.")
+            if self.username:
+                add_question(self.username, original_question, status="pending")
+        else:
+            self.output_box.setText(cleaned_answer)
+            if self.username:
+                add_question(
+                    self.username,
+                    original_question,
+                    answer=cleaned_answer,
+                    status="answered",
+                    operator="RAG"
+                )
+
         self.input_box.clear()
     
-    def on_error(self, message):
-        self.output_box.setText(message)
-        
-        if self.username:
-            question = self.input_box.toPlainText().strip()
-            if question:
-                add_question(self.username, question, status="pending")
-        
+    def on_error(self, message, original_question):
         self.btn_send.setEnabled(True)
+        # Убрано сообщение об ошибке связи
+        self.output_box.setText("Ваш запрос передан оператору.")
+        
+        if self.username and original_question:
+            add_question(self.username, original_question, status="pending")
 
 
 class UserWidget(QWidget):
@@ -393,7 +413,7 @@ class UserWidget(QWidget):
         table.setRowCount(len(rows))
         
         for i, r in enumerate(rows):
-            qid, question, answer, status, operator = r
+            qid, question, answer, status = r
             table.setItem(i, 0, QTableWidgetItem(str(qid)))
             table.setItem(i, 1, QTableWidgetItem(question[:200]))
             table.setItem(i, 2, QTableWidgetItem((answer or "")[:200]))
@@ -408,4 +428,3 @@ class UserWidget(QWidget):
         
         dlg.resize(800, 400)
         dlg.exec()
-
